@@ -12,15 +12,13 @@ const TEST_EVENT_CODE = process.env.TEST_EVENT_CODE || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
 
-// Carrega o System Prompt do especialista (guardrails do chat)
+// System Prompt do Especialista (guardrails)
 let SYSTEM_PROMPT = 'Você é o Especialista do Poder Supremo. Sua missão é levar a decisão de compra do e-book em no máximo 6 interações...';
-try {
-  SYSTEM_PROMPT = fs.readFileSync('./gemini_system_prompt.txt', 'utf-8');
-} catch(e) { /* segue com default */ }
+try { SYSTEM_PROMPT = fs.readFileSync('./gemini_system_prompt.txt', 'utf-8'); } catch(e) {}
 
-// === CORS: libera chamadas do frontend (Netlify/domínio próprio) ===
+// CORS liberado (simplificado)
 await app.register(cors, {
-  origin: (origin, cb) => { cb(null, true); }, // liberar tudo (ajuste se quiser restringir)
+  origin: (origin, cb) => { cb(null, true); },
   methods: ['GET','POST','OPTIONS']
 });
 
@@ -28,20 +26,13 @@ function getIP(req) {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || '').trim();
 }
 
-app.get('/healthz', async (req, reply) => {
-  return reply.send({ ok: true, ts: Date.now() });
-});
+app.get('/healthz', async (_req, reply) => reply.send({ ok: true, ts: Date.now() }));
 
-// ===== Conversions API proxy (Meta CAPI) =====
+// === Meta Conversions API proxy ===
 app.post('/capi', async (req, reply) => {
   try {
     const { event_name, event_id, payload, user_data, ts, url } = req.body || {};
-    app.log.info({ event_name, event_id }, 'CAPI incoming');
-
-    if (!FB_PIXEL_ID || !FB_ACCESS_TOKEN) {
-      app.log.warn('CAPI disabled: missing FB_PIXEL_ID or FB_ACCESS_TOKEN');
-      return reply.send({ ok: true, forwarded: false });
-    }
+    if (!FB_PIXEL_ID || !FB_ACCESS_TOKEN) return reply.send({ ok: true, forwarded: false });
 
     const ip = getIP(req);
     const ua = req.headers['user-agent'] || '';
@@ -58,6 +49,7 @@ app.post('/capi', async (req, reply) => {
           client_ip_address: ip,
           fbp: user_data?.fbp || undefined,
           fbc: user_data?.fbc || undefined
+          // Quando integrar email/telefone via webhook: hash SHA-256 aqui.
         },
         custom_data: payload && payload.custom_data ? payload.custom_data : payload
       }],
@@ -69,17 +61,14 @@ app.post('/capi', async (req, reply) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-
     const data = await res.json().catch(()=>({}));
-    app.log.info({ meta: data }, 'CAPI response');
     return reply.send({ ok: true, forwarded: true, meta: data });
   } catch (e) {
-    app.log.error(e);
     return reply.status(500).send({ ok: false, error: String(e) });
   }
 });
 
-// ===== Gemini chat orchestration (humaniza o especialista, com guardrails) =====
+// === Gemini orchestration ===
 app.post('/gemini/chat', async (req, reply) => {
   try {
     const { state='IDLE', goal=null, count=0, payload={} } = req.body || {};
@@ -93,7 +82,7 @@ app.post('/gemini/chat', async (req, reply) => {
     const input = JSON.stringify({ state, goal, count, payload });
     const gemURL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const body = {
-      contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\\nINPUT:' + input }]}],
+      contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\nINPUT:' + input }]}],
       generationConfig: { temperature: 0.6, maxOutputTokens: 256 }
     };
 
@@ -101,8 +90,7 @@ app.post('/gemini/chat', async (req, reply) => {
     const data = await res.json().catch(()=>({}));
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    let out = null;
-    try { out = JSON.parse(text); } catch { out = null; }
+    let out = null; try { out = JSON.parse(text); } catch { out = null; }
     if (!out || typeof out !== 'object') {
       out = state==='IDLE'
         ? { message: 'Eu sou o Especialista do Poder Supremo. Em 60s eu te digo se é para você. Qual seu objetivo agora?', buttons: ['Controle emocional','Foco/Hábito','Autoconfiança','Influência/Carreira'], nextState: 'IDLE' }
@@ -110,20 +98,14 @@ app.post('/gemini/chat', async (req, reply) => {
           ? { message: 'Feche os olhos 20s. Respire 4–4–4. Diga: “Eu comando a próxima decisão”. Isso é 1% do método. Quer começar hoje?', buttons: ['Quero meu acesso agora','Tenho uma dúvida'], nextState: 'GOAL_SELECTED' }
           : { message: 'Manda a real. O que te segura agora?', buttons: ['Preço','Tempo','Ceticismo','Valores/Religião'], nextState: 'OBJECTION' };
     }
-
     return reply.send(out);
   } catch (e) {
-    app.log.error(e);
     return reply.status(500).send({ ok: false, error: String(e) });
   }
 });
 
-// (Opcional) Webhook do provedor de checkout
-app.post('/webhook', async (req, reply) => {
-  // TODO: validar assinatura e enviar Purchase via CAPI
-  return reply.send({ ok: true });
-});
+app.post('/webhook', async (_req, reply) => reply.send({ ok: true }));
 
 app.listen({ port: PORT, host: '0.0.0.0' }).then(()=>{
   console.log('API up on :' + PORT);
-}).catch(err => { app.log.error(err); process.exit(1); });
+}).catch(err => { console.error(err); process.exit(1); });
