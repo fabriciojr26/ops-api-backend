@@ -1,18 +1,28 @@
-
 import fastify from 'fastify';
 import fetch from 'node-fetch';
 import fs from 'fs';
+import cors from '@fastify/cors';
 
 const app = fastify({ logger: true });
 const PORT = process.env.PORT || 8080;
 
 const FB_PIXEL_ID = process.env.FB_PIXEL_ID || '';
 const FB_ACCESS_TOKEN = process.env.FB_ACCESS_TOKEN || '';
-const TEST_EVENT_CODE = process.env.TEST_EVENT_CODE || 'TEST97280';
+const TEST_EVENT_CODE = process.env.TEST_EVENT_CODE || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
 
-const SYSTEM_PROMPT = fs.readFileSync('./gemini_system_prompt.txt', 'utf-8');
+// Carrega o System Prompt do especialista (guardrails do chat)
+let SYSTEM_PROMPT = 'Você é o Especialista do Poder Supremo. Sua missão é levar a decisão de compra do e-book em no máximo 6 interações...';
+try {
+  SYSTEM_PROMPT = fs.readFileSync('./gemini_system_prompt.txt', 'utf-8');
+} catch(e) { /* segue com default */ }
+
+// === CORS: libera chamadas do frontend (Netlify/domínio próprio) ===
+await app.register(cors, {
+  origin: (origin, cb) => { cb(null, true); }, // liberar tudo (ajuste se quiser restringir)
+  methods: ['GET','POST','OPTIONS']
+});
 
 function getIP(req) {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || '').trim();
@@ -22,11 +32,10 @@ app.get('/healthz', async (req, reply) => {
   return reply.send({ ok: true, ts: Date.now() });
 });
 
+// ===== Conversions API proxy (Meta CAPI) =====
 app.post('/capi', async (req, reply) => {
   try {
-    const { event_name, event_id, payload, user_data, ts, url } = req.body || {
-      event_name: null, event_id: null, payload: null, user_data: null, ts: null, url: null
-    };
+    const { event_name, event_id, payload, user_data, ts, url } = req.body || {};
     app.log.info({ event_name, event_id }, 'CAPI incoming');
 
     if (!FB_PIXEL_ID || !FB_ACCESS_TOKEN) {
@@ -70,6 +79,7 @@ app.post('/capi', async (req, reply) => {
   }
 });
 
+// ===== Gemini chat orchestration (humaniza o especialista, com guardrails) =====
 app.post('/gemini/chat', async (req, reply) => {
   try {
     const { state='IDLE', goal=null, count=0, payload={} } = req.body || {};
@@ -83,7 +93,7 @@ app.post('/gemini/chat', async (req, reply) => {
     const input = JSON.stringify({ state, goal, count, payload });
     const gemURL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const body = {
-      contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\nINPUT:' + input }]}],
+      contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\\nINPUT:' + input }]}],
       generationConfig: { temperature: 0.6, maxOutputTokens: 256 }
     };
 
@@ -108,7 +118,9 @@ app.post('/gemini/chat', async (req, reply) => {
   }
 });
 
+// (Opcional) Webhook do provedor de checkout
 app.post('/webhook', async (req, reply) => {
+  // TODO: validar assinatura e enviar Purchase via CAPI
   return reply.send({ ok: true });
 });
 
