@@ -1,0 +1,14 @@
+{
+  "name": "ops-api-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "fastify": "4.28.1",
+    "node-fetch": "3.3.2",
+    "@fastify/cors": "8.5.0"
+  }
+}
